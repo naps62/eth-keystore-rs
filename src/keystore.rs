@@ -1,6 +1,7 @@
+use rand::{CryptoRng, Rng};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::{v3, v4};
+use crate::{v3, v4, KeystoreError};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "version")]
@@ -41,18 +42,21 @@ impl<'de> Deserialize<'de> for EthKeystore {
     }
 }
 
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-/// Types of key derivition functions supported by the Web3 Secret Storage.
-pub enum KdfType {
-    Pbkdf2,
-    Scrypt,
+pub trait Keystore: Sized {
+    fn decrypt<S>(&self, password: S) -> Result<Vec<u8>, KeystoreError>
+    where
+        S: AsRef<[u8]>;
+
+    fn encrypt<R, B, S>(rng: &mut R, pk: B, password: S) -> Result<Self, KeystoreError>
+    where
+        R: Rng + CryptoRng,
+        B: AsRef<[u8]>,
+        S: AsRef<[u8]>;
 }
 
 #[cfg(test)]
 mod tests {
-
-    use crate::keystore::EthKeystore;
+    use super::*;
 
     #[cfg(not(feature = "geth-compat"))]
     #[test]

@@ -2,19 +2,17 @@
 //! A minimalist library to interact with encrypted JSON keystores as per the
 //! [Web3 Secret Storage Definition](https://github.com/ethereum/wiki/wiki/Web3-Secret-Storage-Definition).
 
-use keystore::EthKeystore;
+use keystore::{EthKeystore, Keystore};
 use rand::{CryptoRng, Rng};
 
 use std::{fs::File, io::Read, path::Path};
 
+mod common;
 mod error;
 mod keystore;
 mod utils;
 pub mod v3;
 pub mod v4;
-
-#[cfg(feature = "geth-compat")]
-use utils::geth_compat::address_from_pk;
 
 pub use error::KeystoreError;
 
@@ -82,7 +80,7 @@ where
     let keystore: EthKeystore = serde_json::from_str(&contents)?;
 
     match keystore {
-        EthKeystore::V3(keystore) => v3::decrypt_key(keystore, password),
+        EthKeystore::V3(keystore) => keystore.decrypt(password),
         EthKeystore::V4(keystore) => v4::decrypt_key(keystore, password),
     }
 }

@@ -1,23 +1,22 @@
-mod keystore;
+mod types;
 
 use std::{fs::File, io::Write, path::Path};
 
-use aes::{
-    cipher::{self, InnerIvInit, KeyInit, StreamCipherCore},
-    Aes128,
-};
 use digest::{Digest, Update};
 use hmac::Hmac;
-pub use keystore::EthKeystoreV4;
 use pbkdf2::pbkdf2;
 use rand::{CryptoRng, Rng};
 use scrypt::{scrypt, Params as ScryptParams};
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use uuid::Uuid;
 
-use crate::{keystore::KdfType, v3::KdfparamsType, KeystoreError};
+use crate::{
+    common::{Aes128Ctr, KdfType, KdfparamsType},
+    KeystoreError,
+};
 
-use self::keystore::{
+use self::types::{
     Checksum, ChecksumParams, Cipher, CipherparamsJson, CryptoJson, HashFunction, Kdf,
 };
 
@@ -28,6 +27,16 @@ const DEFAULT_KDF_PARAMS_DKLEN: u8 = 32u8;
 const DEFAULT_KDF_PARAMS_LOG_N: u8 = 18u8;
 const DEFAULT_KDF_PARAMS_R: u32 = 8u32;
 const DEFAULT_KDF_PARAMS_P: u32 = 1u32;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EthKeystoreV4 {
+    pub crypto: CryptoJson,
+    pub description: String,
+    pub pubkey: String,
+    pub path: String,
+    pub uuid: String,
+    pub version: u8,
+}
 
 pub fn decrypt_key<S>(keystore: EthKeystoreV4, password: S) -> Result<Vec<u8>, KeystoreError>
 where
@@ -99,7 +108,7 @@ where
     };
 
     let bls_pk = bls_sk.sk_to_pk().compress();
-    let pubkey = hex::encode(&bls_pk);
+    let pubkey = hex::encode(bls_pk);
 
     // Generate a random salt.
     let mut salt = vec![0u8; DEFAULT_KEY_SIZE];
@@ -176,24 +185,233 @@ where
     let contents = serde_json::to_string(&keystore)?;
 
     // Create a file in write-only mode, to store the encrypted JSON keystore.
-    let mut file = File::create(dir.as_ref().join(&name))?;
+    let mut file = File::create(dir.as_ref().join(name))?;
     file.write_all(contents.as_bytes())?;
 
     Ok(uuid.to_string())
 }
 
-struct Aes128Ctr {
-    inner: ctr::CtrCore<Aes128, ctr::flavors::Ctr128BE>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex::FromHex;
+    use uuid::Uuid;
 
-impl Aes128Ctr {
-    fn new(key: &[u8], iv: &[u8]) -> Result<Self, cipher::InvalidLength> {
-        let cipher = aes::Aes128::new_from_slice(key).unwrap();
-        let inner = ctr::CtrCore::inner_iv_slice_init(cipher, iv).unwrap();
-        Ok(Self { inner })
+    #[cfg(not(feature = "geth-compat"))]
+    #[test]
+    fn test_deserialize_pbkdf2() {
+        // Test vec from: https://eips.ethereum.org/EIPS/eip-2335
+
+        let data = r#"
+        {
+            "crypto": {
+                "kdf": {
+                    "function": "pbkdf2",
+                    "params": {
+                        "dklen": 32,
+                        "c": 262144,
+                        "prf": "hmac-sha256",
+                        "salt": "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
+                    },
+                    "message": ""
+                },
+                "checksum": {
+                    "function": "sha256",
+                    "params": {},
+                    "message": "8a9f5d9912ed7e75ea794bc5a89bca5f193721d30868ade6f73043c6ea6febf1"
+                },
+                "cipher": {
+                    "function": "aes-128-ctr",
+                    "params": {
+                        "iv": "264daa3f303d7259501c93d997d84fe6"
+                    },
+                    "message": "cee03fde2af33149775b7223e7845e4fb2c8ae1792e5f99fe9ecf474cc8c16ad"
+                }
+            },
+            "description": "This is a test keystore that uses PBKDF2 to secure the secret.",
+            "pubkey": "9612d7a727c9d0a22e185a1c768478dfe919cada9266988cb32359c11f2b7b27f4ae4040902382ae2910c15e2b420d07",
+            "path": "m/12381/60/0/0",
+            "uuid": "64625def-3331-4eea-ab6f-782f3ed16a83",
+            "version": 4
+        }"#;
+        let keystore: EthKeystoreV4 = serde_json::from_str(data).unwrap();
+
+        // Check outer level
+        assert_eq!(
+            keystore.uuid,
+            Uuid::parse_str("64625def-3331-4eea-ab6f-782f3ed16a83")
+                .unwrap()
+                .to_string()
+        );
+        assert_eq!(
+            keystore.description,
+            "This is a test keystore that uses PBKDF2 to secure the secret.".to_string()
+        );
+        assert_eq!(
+            keystore.pubkey,
+            "9612d7a727c9d0a22e185a1c768478dfe919cada9266988cb32359c11f2b7b27f4ae4040902382ae2910c15e2b420d07".to_string()
+        );
+        assert_eq!(keystore.path, "m/12381/60/0/0".to_string());
+
+        // Check Cipher
+        assert_eq!(keystore.crypto.cipher.function, "aes-128-ctr");
+        assert_eq!(
+            keystore.crypto.cipher.params.iv,
+            Vec::from_hex("264daa3f303d7259501c93d997d84fe6").unwrap()
+        );
+        assert_eq!(
+            keystore.crypto.cipher.message,
+            Vec::from_hex("cee03fde2af33149775b7223e7845e4fb2c8ae1792e5f99fe9ecf474cc8c16ad")
+                .unwrap()
+        );
+
+        // Check KDF
+        assert_eq!(keystore.crypto.kdf.function, KdfType::Pbkdf2);
+        assert_eq!(
+            keystore.crypto.kdf.params,
+            KdfparamsType::Pbkdf2 {
+                c: 262144,
+                dklen: 32,
+                prf: String::from("hmac-sha256"),
+                salt: Vec::from_hex(
+                    "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
+                )
+                .unwrap(),
+            }
+        );
+        assert_eq!(keystore.crypto.kdf.message, Vec::from_hex("").unwrap());
+
+        // Test Checksum
+        assert_eq!(
+            keystore.crypto.checksum.message,
+            Vec::from_hex("8a9f5d9912ed7e75ea794bc5a89bca5f193721d30868ade6f73043c6ea6febf1")
+                .unwrap()
+        );
+
+        assert_eq!(keystore.crypto.checksum.function, HashFunction::Sha256);
     }
 
-    fn apply_keystream(self, buf: &mut [u8]) {
-        self.inner.apply_keystream_partial(buf.into());
+    #[test]
+    fn test_deserialize_kdf() {
+        let data = r#"
+        {
+            "function": "scrypt",
+            "params": {
+                "dklen": 32,
+                "n": 262144,
+                "p": 1,
+                "r": 8,
+                "salt": "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
+            },
+            "message": ""
+        }"#;
+        let _kdf: Kdf = serde_json::from_str(data).unwrap();
+    }
+
+    #[test]
+    fn test_deserialize_checksum() {
+        let data = r#"
+        {
+            "function": "sha256",
+            "params": {},
+            "message": "d2217fe5f3e9a1e34581ef8a78f7c9928e436d36dacc5e846690a5581e8ea484"
+        }"#;
+        let _kdf: Checksum = serde_json::from_str(data).unwrap();
+    }
+
+    #[cfg(not(feature = "geth-compat"))]
+    #[test]
+    fn test_deserialize_scrypt() {
+        // Test vec from: https://eips.ethereum.org/EIPS/eip-2335
+
+        use hex::FromHex;
+        let data = r#"
+        {
+            "crypto": {
+                "kdf": {
+                    "function": "scrypt",
+                    "params": {
+                        "dklen": 32,
+                        "n": 262144,
+                        "p": 1,
+                        "r": 8,
+                        "salt": "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
+                    },
+                    "message": ""
+                },
+                "checksum": {
+                    "function": "sha256",
+                    "params": {},
+                    "message": "d2217fe5f3e9a1e34581ef8a78f7c9928e436d36dacc5e846690a5581e8ea484"
+                },
+                "cipher": {
+                    "function": "aes-128-ctr",
+                    "params": {
+                        "iv": "264daa3f303d7259501c93d997d84fe6"
+                    },
+                    "message": "06ae90d55fe0a6e9c5c3bc5b170827b2e5cce3929ed3f116c2811e6366dfe20f"
+                }
+            },
+            "description": "This is a test keystore that uses scrypt to secure the secret.",
+            "pubkey": "9612d7a727c9d0a22e185a1c768478dfe919cada9266988cb32359c11f2b7b27f4ae4040902382ae2910c15e2b420d07",
+            "path": "m/12381/60/3141592653/589793238",
+            "uuid": "1d85ae20-35c5-4611-98e8-aa14a633906f",
+            "version": 4
+        }"#;
+        let keystore: EthKeystoreV4 = serde_json::from_str(data).unwrap();
+
+        // Check outer level
+        assert_eq!(
+            keystore.uuid,
+            Uuid::parse_str("1d85ae20-35c5-4611-98e8-aa14a633906f")
+                .unwrap()
+                .to_string()
+        );
+        assert_eq!(
+            keystore.description,
+            "This is a test keystore that uses scrypt to secure the secret.".to_string()
+        );
+        assert_eq!(
+            keystore.pubkey,
+            "9612d7a727c9d0a22e185a1c768478dfe919cada9266988cb32359c11f2b7b27f4ae4040902382ae2910c15e2b420d07".to_string()
+        );
+        assert_eq!(keystore.path, "m/12381/60/3141592653/589793238".to_string());
+
+        // Check Cipher
+        assert_eq!(keystore.crypto.cipher.function, "aes-128-ctr");
+        assert_eq!(
+            keystore.crypto.cipher.params.iv,
+            Vec::from_hex("264daa3f303d7259501c93d997d84fe6").unwrap()
+        );
+        assert_eq!(
+            keystore.crypto.cipher.message,
+            Vec::from_hex("06ae90d55fe0a6e9c5c3bc5b170827b2e5cce3929ed3f116c2811e6366dfe20f")
+                .unwrap()
+        );
+        // Check KDF
+        assert_eq!(keystore.crypto.kdf.function, KdfType::Scrypt);
+        assert_eq!(
+            keystore.crypto.kdf.params,
+            KdfparamsType::Scrypt {
+                dklen: 32,
+                n: 262144,
+                p: 1,
+                r: 8,
+                salt: Vec::from_hex(
+                    "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
+                )
+                .unwrap(),
+            }
+        );
+        assert_eq!(keystore.crypto.kdf.message, Vec::from_hex("").unwrap());
+
+        // Test Checksum
+        assert_eq!(
+            keystore.crypto.checksum.message,
+            Vec::from_hex("d2217fe5f3e9a1e34581ef8a78f7c9928e436d36dacc5e846690a5581e8ea484")
+                .unwrap()
+        );
+
+        assert_eq!(keystore.crypto.checksum.function, HashFunction::Sha256);
     }
 }
