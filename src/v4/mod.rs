@@ -29,6 +29,20 @@ const DEFAULT_KDF_PARAMS_LOG_N: u8 = 18u8;
 const DEFAULT_KDF_PARAMS_R: u32 = 8u32;
 const DEFAULT_KDF_PARAMS_P: u32 = 1u32;
 
+impl EthKeystoreV4 {
+    pub fn new<R, S>(rng: &mut R, password: S) -> Result<Self, KeystoreError>
+    where
+        R: Rng + CryptoRng,
+        S: AsRef<[u8]>,
+    {
+        // Generate a random private key.
+        let mut pk = vec![0u8; DEFAULT_KEY_SIZE];
+        rng.fill_bytes(pk.as_mut_slice());
+
+        Ok(Self::encrypt(rng, &pk, password)?)
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct EthKeystoreV4 {
     pub crypto: CryptoJson,
@@ -53,7 +67,7 @@ impl Keystore for EthKeystoreV4 {
                 ref salt,
             } => {
                 let mut key = vec![0u8; dklen as usize];
-                pbkdf2::<Hmac<Sha256>>(password.as_ref(), &salt, c, key.as_mut_slice());
+                pbkdf2::<Hmac<Sha256>>(password.as_ref(), salt, c, key.as_mut_slice());
                 key
             }
             KdfparamsType::Scrypt {
@@ -66,7 +80,7 @@ impl Keystore for EthKeystoreV4 {
                 let mut key = vec![0u8; dklen as usize];
                 let log_n = (n as f32).log2() as u8;
                 let scrypt_params = ScryptParams::new(log_n, r, p)?;
-                scrypt(password.as_ref(), &salt, &scrypt_params, key.as_mut_slice())?;
+                scrypt(password.as_ref(), salt, &scrypt_params, key.as_mut_slice())?;
                 key
             }
         };
@@ -169,6 +183,25 @@ impl Keystore for EthKeystoreV4 {
             },
         })
     }
+
+    fn save_to_file<P>(&self, dir: P, name: Option<&str>) -> Result<(), KeystoreError>
+    where
+        P: AsRef<Path>,
+    {
+        // If a file name is not specified for the keystore, simply use the strigified uuid.
+        let name = if let Some(name) = name {
+            name.to_string()
+        } else {
+            self.uuid.to_string()
+        };
+        let contents = serde_json::to_string(self)?;
+
+        // Create a file in write-only mode, to store the encrypted JSON keystore.
+        let mut file = File::create(dir.as_ref().join(name))?;
+        file.write_all(contents.as_bytes())?;
+
+        Ok(())
+    }
 }
 
 pub fn encrypt_key<P, R, B, S>(
@@ -254,9 +287,7 @@ mod tests {
         // Check outer level
         assert_eq!(
             keystore.uuid,
-            Uuid::parse_str("64625def-3331-4eea-ab6f-782f3ed16a83")
-                .unwrap()
-                .to_string()
+            Uuid::parse_str("64625def-3331-4eea-ab6f-782f3ed16a83").unwrap()
         );
         assert_eq!(
             keystore.description,
@@ -378,9 +409,7 @@ mod tests {
         // Check outer level
         assert_eq!(
             keystore.uuid,
-            Uuid::parse_str("1d85ae20-35c5-4611-98e8-aa14a633906f")
-                .unwrap()
-                .to_string()
+            Uuid::parse_str("1d85ae20-35c5-4611-98e8-aa14a633906f").unwrap()
         );
         assert_eq!(
             keystore.description,

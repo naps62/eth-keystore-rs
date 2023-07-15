@@ -44,6 +44,20 @@ pub struct EthKeystoreV3 {
     pub id: Uuid,
 }
 
+impl EthKeystoreV3 {
+    pub fn new<R, S>(rng: &mut R, password: S) -> Result<Self, KeystoreError>
+    where
+        R: Rng + CryptoRng,
+        S: AsRef<[u8]>,
+    {
+        // Generate a random private key.
+        let mut pk = vec![0u8; DEFAULT_KEY_SIZE];
+        rng.fill_bytes(pk.as_mut_slice());
+
+        Ok(Self::encrypt(rng, &pk, password)?)
+    }
+}
+
 impl Keystore for EthKeystoreV3 {
     fn decrypt<S>(&self, password: S) -> Result<Vec<u8>, KeystoreError>
     where
@@ -152,6 +166,25 @@ impl Keystore for EthKeystoreV3 {
             address: address_from_pk(&pk)?,
         })
     }
+
+    fn save_to_file<P>(&self, dir: P, name: Option<&str>) -> Result<(), KeystoreError>
+    where
+        P: AsRef<Path>,
+    {
+        // If a file name is not specified for the keystore, simply use the strigified uuid.
+        let name = if let Some(name) = name {
+            name.to_string()
+        } else {
+            self.id.to_string()
+        };
+        let contents = serde_json::to_string(self)?;
+
+        // Create a file in write-only mode, to store the encrypted JSON keystore.
+        let mut file = File::create(dir.as_ref().join(name))?;
+        file.write_all(contents.as_bytes())?;
+
+        Ok(())
+    }
 }
 
 pub fn new<P, R, S>(
@@ -206,6 +239,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "geth-compat")]
     use hex::FromHex;
 
     #[cfg(feature = "geth-compat")]

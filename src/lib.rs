@@ -50,7 +50,7 @@ where
     R: Rng + CryptoRng,
     S: AsRef<[u8]>,
 {
-    v3::new(dir, rng, password, name)
+    EthKeystore::new_v3(rng, password)?.save_to_file(dir, name)
 }
 
 /// Decrypts an encrypted JSON keystore at the provided `path` using the provided `password`.
@@ -74,15 +74,7 @@ where
     P: AsRef<Path>,
     S: AsRef<[u8]>,
 {
-    let mut file = File::open(path)?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
-    let keystore: EthKeystore = serde_json::from_str(&contents)?;
-
-    match keystore {
-        EthKeystore::V3(keystore) => keystore.decrypt(password),
-        EthKeystore::V4(keystore) => keystore.decrypt(password),
-    }
+    EthKeystore::from_file(path)?.decrypt(password)
 }
 
 /// Encrypts the given private key using the [Scrypt](https://tools.ietf.org/html/rfc7914.html)

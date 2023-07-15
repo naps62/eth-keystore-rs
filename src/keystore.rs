@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{fs::File, io::Read, path::Path};
 
 use rand::{CryptoRng, Rng};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -14,6 +14,71 @@ pub enum EthKeystore {
     // TODO: add a v4 feature flag
     #[serde(rename = "4")]
     V4(v4::EthKeystoreV4),
+}
+
+pub trait Keystore: Sized {
+    fn decrypt<S>(&self, password: S) -> Result<Vec<u8>, KeystoreError>
+    where
+        S: AsRef<[u8]>;
+
+    fn encrypt<R, B, S>(rng: &mut R, pk: B, password: S) -> Result<Self, KeystoreError>
+    where
+        R: Rng + CryptoRng,
+        B: AsRef<[u8]>,
+        S: AsRef<[u8]>;
+
+    fn save_to_file<P>(&self, dir: P, name: Option<&str>) -> Result<(), KeystoreError>
+    where
+        P: AsRef<Path>;
+}
+
+impl EthKeystore {
+    pub fn new_v3<R, S>(rng: &mut R, password: S) -> Result<Self, KeystoreError>
+    where
+        R: Rng + CryptoRng,
+        S: AsRef<[u8]>,
+    {
+        Ok(Self::V3(v3::EthKeystoreV3::new(rng, password)?))
+    }
+
+    pub fn new_v4<R, S>(rng: &mut R, password: S) -> Result<Self, KeystoreError>
+    where
+        R: Rng + CryptoRng,
+        S: AsRef<[u8]>,
+    {
+        Ok(Self::V4(v4::EthKeystoreV4::new(rng, password)?))
+    }
+
+    pub fn decrypt<S>(&self, password: S) -> Result<Vec<u8>, KeystoreError>
+    where
+        S: AsRef<[u8]>,
+    {
+        match self {
+            Self::V3(keystore) => keystore.decrypt(password),
+            Self::V4(keystore) => keystore.decrypt(password),
+        }
+    }
+
+    pub fn from_file<P>(path: P) -> Result<Self, KeystoreError>
+    where
+        P: AsRef<Path>,
+    {
+        let mut file = File::open(path)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+
+        Ok(serde_json::from_str(&contents)?)
+    }
+
+    pub fn save_to_file<P>(&self, dir: P, name: Option<&str>) -> Result<(), KeystoreError>
+    where
+        P: AsRef<Path>,
+    {
+        match self {
+            Self::V3(keystore) => keystore.save_to_file(dir, name),
+            Self::V4(keystore) => keystore.save_to_file(dir, name),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for EthKeystore {
@@ -42,18 +107,6 @@ impl<'de> Deserialize<'de> for EthKeystore {
             ))),
         }
     }
-}
-
-pub trait Keystore: Sized {
-    fn decrypt<S>(&self, password: S) -> Result<Vec<u8>, KeystoreError>
-    where
-        S: AsRef<[u8]>;
-
-    fn encrypt<R, B, S>(rng: &mut R, pk: B, password: S) -> Result<Self, KeystoreError>
-    where
-        R: Rng + CryptoRng,
-        B: AsRef<[u8]>,
-        S: AsRef<[u8]>;
 }
 
 #[cfg(test)]
