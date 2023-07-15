@@ -81,7 +81,7 @@ where
 
     match keystore {
         EthKeystore::V3(keystore) => keystore.decrypt(password),
-        EthKeystore::V4(keystore) => v4::decrypt_key(keystore, password),
+        EthKeystore::V4(keystore) => keystore.decrypt(password),
     }
 }
 
